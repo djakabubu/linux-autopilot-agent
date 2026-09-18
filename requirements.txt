@@ -1,0 +1,5 @@
+# Linux Autopilot Agent has ZERO external dependencies.
+#
+# It uses only the Python standard library, so there is nothing to install.
+# This file is kept for documentation purposes and for tools that expect a
+# requirements file to exist.
