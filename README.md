@@ -50,7 +50,7 @@ Unlike naive "AI shell" wrappers, this agent uses a **structured JSON protocol**
 
 ## ✨ Features
 
-- 🗣️ **Natural language control** — describe what you want, in plain English.
+- 🗣️ **Natural language control** — describe what you want, in any language.
 - 🛡️ **Local risk engine** — commands are classified as `SAFE`, `CAUTION` or `DANGEROUS` by regex rules that run locally, independent of the model.
 - ✅ **Auto-execution of safe commands** — read-only and harmless operations run without asking.
 - ⚠️ **Interactive confirmation** — only for destructive, privileged, network, system or potentially exfiltrating operations.
