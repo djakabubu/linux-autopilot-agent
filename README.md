@@ -115,6 +115,48 @@ That's it. No `pip install`, no virtual environment required.
 
 ---
 
+## 💡 Tip: run it with just `ai`
+
+Instead of typing `python3 linux_autopilot.py` every time, you can create a symlink in your personal `~/bin` folder so the agent is launched with a single short command: `ai`.
+
+```bash
+# 1. Make the script executable
+chmod +x linux_autopilot.py
+
+# 2. Create your personal bin folder (if it doesn't exist)
+mkdir -p ~/bin
+
+# 3. Create a symlink to the script
+ln -s "$(pwd)/linux_autopilot.py" ~/bin/ai
+
+# 4. Make sure ~/bin is in your PATH (add to ~/.bashrc or ~/.zshrc)
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 5. Done! Now you can run it from anywhere
+ai
+ai "check why docker won't start"
+```
+
+> **Note:** the script uses `#!/usr/bin/env python3` as its shebang, so the symlink works without specifying the interpreter — the system finds `python3` automatically.
+
+### If you prefer a wrapper script instead
+
+If you don't want a symlink, create a small wrapper in `~/bin`:
+
+```bash
+mkdir -p ~/bin
+cat > ~/bin/ai <<'EOF'
+#!/usr/bin/env bash
+exec python3 /path/to/linux_autopilot.py "$@"
+EOF
+chmod +x ~/bin/ai
+```
+
+Then run `ai` from anywhere. To remove it later, just `rm ~/bin/ai`.
+
+---
+
 ## ⚡ Quick Start
 
 ```bash
