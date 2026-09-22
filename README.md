@@ -62,6 +62,12 @@ Unlike naive "AI shell" wrappers, this agent uses a **structured JSON protocol**
 - 🤖 **Autopilot mode** — run everything without confirmation (use with care).
 - 🎨 **Colored terminal UI** — with a `--no-color` option for scripts and CI.
 
+<div align="center">
+
+![Demo](demo_hd.gif)
+
+</div>
+
 ---
 
 ## ⚙️ How it works
