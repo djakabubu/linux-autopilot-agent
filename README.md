@@ -58,7 +58,8 @@ Unlike naive "AI shell" wrappers, this agent uses a **structured JSON protocol**
 - 📦 **Zero dependencies** — pure Python standard library, no `pip install` needed.
 - 🔄 **Streaming responses** — see the model's reasoning and output in real time.
 - 💾 **Persistent history** — your requests are saved to `history.json` next to the script.
-- 🧩 **Multi-model support** — switch models on the fly with `:model`.
+- � **Model memory** — remembers the last 4 models used and proposes them at startup.
+- �🧩 **Multi-model support** — switch models on the fly with `:model`.
 - 🤖 **Autopilot mode** — run everything without confirmation (use with care).
 - 🎨 **Colored terminal UI** — with a `--no-color` option for scripts and CI.
 
@@ -186,7 +187,9 @@ python3 linux_autopilot.py "check why docker won't start"
 python3 linux_autopilot.py
 ```
 
-You'll get a prompt where you can type requests in natural language and use the built-in commands (see [Interactive Commands](#-interactive-commands)).
+When started interactively (without a prompt), the agent proposes the **last 4 models used** and lets you pick one by number, press Enter for the default, or type a custom model name. The chosen model is remembered for the next session.
+
+You'll then get a prompt where you can type requests in natural language and use the built-in commands (see [Interactive Commands](#-interactive-commands)).
 
 ### One-shot mode
 
@@ -271,9 +274,13 @@ Before any output is sent back to the model, the agent scrubs known secret patte
 | `:history` | Show saved requests |
 | `:history clear` | Delete the persistent history |
 | `:autopilot` | Toggle no-confirmation mode |
-| `:model NAME` | Change the model in the session |
+| `:model NAME` | Change the model in the session (remembered) |
 | `:cd PATH` | Change the working directory |
 | `:quit` | Exit |
+
+### Model selection
+
+When started interactively, the agent proposes the **last 4 models used** (stored in `model_history.json` next to the script). Pick one by number, press Enter for the default, or type a custom model name. The chosen model is remembered for the next session.
 
 When the agent asks for confirmation:
 

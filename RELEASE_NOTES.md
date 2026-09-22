@@ -1,3 +1,19 @@
+## 🎉 Linux Autopilot Agent v1.1.0
+
+**Model memory: the agent now remembers the last 4 models you used and proposes them when started interactively.**
+
+---
+
+### ✨ What's new in v1.1.0
+
+- 🧠 **Model memory** — the last 4 models used are saved to `model_history.json` and proposed at startup.
+- 🎯 **Interactive model selection** — pick a recent model by number, press Enter for the default, or type a custom name.
+- 💾 **Persistent choice** — the selected model is remembered for the next session.
+- 🔄 **`:model` integration** — models changed during a session are also remembered.
+- 📊 **`:status`** now shows the recent models.
+
+---
+
 ## 🎉 Linux Autopilot Agent v1.0.0
 
 **An interactive AI agent for Linux system administration, debugging and automation — powered by OpenRouter.**

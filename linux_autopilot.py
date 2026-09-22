@@ -100,7 +100,14 @@ HISTORY_FILE = os.path.join(
 )
 HISTORY_MAX = 200  # maximum number of entries kept on disk
 
-VERSION = "1.0.0"
+# Persistent model history file, stored next to the executable script.
+MODEL_HISTORY_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "model_history.json",
+)
+MODEL_HISTORY_MAX = 4  # number of most recently used models remembered
+
+VERSION = "1.1.0"
 
 
 # ============================================================
@@ -1191,6 +1198,95 @@ def add_to_history(entry: str) -> None:
     save_history(history)
 
 
+def load_model_history() -> list[str]:
+    """Load the list of the most recently used models from disk."""
+    try:
+        with open(MODEL_HISTORY_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return [str(item) for item in data if str(item).strip()]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_model_history(models: list[str]) -> None:
+    """Save the model history to disk, keeping only the most recent entries."""
+    try:
+        with open(MODEL_HISTORY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(models[-MODEL_HISTORY_MAX:], fh, ensure_ascii=False, indent=2)
+    except OSError:
+        # If we cannot write, do not block the session.
+        pass
+
+
+def remember_model(model: str) -> None:
+    """Record a used model, moving it to the front of the history."""
+    model = model.strip()
+    if not model:
+        return
+    history = load_model_history()
+    if model in history:
+        history.remove(model)
+    history.append(model)
+    save_model_history(history)
+
+
+def choose_model_interactive(default: str) -> str:
+    """Ask the user which model to use, proposing the last used ones.
+
+    Returns the chosen model. If the user just presses Enter, the default
+    (the most recently used model, or the configured default) is returned.
+    """
+    history = load_model_history()
+    # Most recently used first.
+    recent = list(reversed(history))
+
+    print()
+    banner("MODEL SELECTION")
+    print("Choose the model to use for this session:")
+    print()
+
+    options = list(recent)
+    if default not in options:
+        options.append(default)
+
+    for idx, model in enumerate(options, 1):
+        marker = " (default)" if model == default else ""
+        print(f"  {idx}. {model}{marker}")
+
+    print(f"  {len(options) + 1}. Other (type the model name)")
+    print()
+
+    while True:
+        try:
+            choice = input(
+                f"{Colors.GREEN}{Colors.BOLD}Model{Colors.ENDC}"
+                f" [1-{len(options) + 1}, default {default}] › "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return default
+
+        if not choice:
+            return default
+
+        if choice.isdigit():
+            num = int(choice)
+            if 1 <= num <= len(options):
+                return options[num - 1]
+            if num == len(options) + 1:
+                custom = input("Model name: ").strip()
+                if custom:
+                    return custom
+                continue
+            warning(f"Invalid choice: {choice}")
+            continue
+
+        # Allow typing a model name directly.
+        return choice
+
+
 HELP_TEXT = """
 📖 HELP — Linux Autopilot
 ════════════════════════════════════════════════════════
@@ -1216,6 +1312,12 @@ HELP_TEXT = """
   :model NAME            change the model in the session
   :cd PATH               change the working directory
   :quit                  exit
+
+🤖 MODEL SELECTION
+  When started interactively (without a prompt), the agent proposes the
+  last 4 models used. Pick one by number, press Enter for the default,
+  or type a custom model name. The chosen model is remembered for the
+  next session.
 
 🛡️ CONFIRMATIONS
   When the agent asks for confirmation:
@@ -1244,6 +1346,9 @@ def show_status(model: str, autopilot: bool = False) -> None:
     print(f"Max output:    {MAX_OUTPUT_CHARS}")
     print(f"API base URL:  {OPENROUTER_BASE_URL}")
     print(f"Autopilot:     {'ACTIVE (no confirmation)' if autopilot else 'disabled'}")
+    recent = list(reversed(load_model_history()))
+    if recent:
+        print(f"Recent models: {', '.join(recent)}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -1329,8 +1434,13 @@ def main() -> int:
             f"   Model: {model}\n"
             f"   Timeout: {COMMAND_TIMEOUT}s · Max step: {args.max_steps}"
         )
+        remember_model(model)
         run_task(prompt, session_messages, model, args.max_steps)
         return 0
+
+    # Interactive mode: propose the last used models.
+    model = choose_model_interactive(model)
+    remember_model(model)
 
     banner(
         f"🤖 INTERACTIVE LINUX AUTOPILOT\n"
@@ -1418,6 +1528,7 @@ def main() -> int:
                     warning("Specify the model name.")
                 else:
                     model = new_model
+                    remember_model(model)
                     success(f"Model set to: {model}")
                 continue
 
