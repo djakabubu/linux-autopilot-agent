@@ -3,8 +3,8 @@
 Linux Autopilot Agent
 =====================
 
-An interactive Linux agent powered by OpenRouter, designed for system
-administration, debugging and automation on Linux / Raspberry Pi.
+An interactive Linux agent powered by OpenRouter, OpenAI or Anthropic (Claude),
+designed for system administration, debugging and automation on Linux / Raspberry Pi.
 
 Main features:
 - JSON protocol between the LLM and the agent: no fragile parsing of ```bash``` blocks.
@@ -19,21 +19,34 @@ Main features:
 - Zero external dependencies: only the Python standard library.
 
 Usage:
-    export OPENROUTER_API_KEY=""
+    export LLM_API_KEY=""                   # generic key for any provider
     python3 linux_autopilot.py
 
 Or:
     python3 linux_autopilot.py "check why docker won't start"
 
 Options:
-    --model NAME      OpenRouter model to use
+    --model NAME      model to use (provider-specific)
     --max-steps N     maximum number of steps per task
     --timeout N       command timeout in seconds
     --no-color        disable terminal colors
     --version         print the version and exit
 
+Provider selection (AGENT_PROVIDER):
+    openrouter  (default)  -> uses OPENROUTER_API_KEY or LLM_API_KEY
+    openai                  -> uses OPENAI_API_KEY or LLM_API_KEY
+    anthropic               -> uses ANTHROPIC_API_KEY or LLM_API_KEY (Claude)
+
 Useful environment variables:
-    AGENT_MODEL=openai/gpt-5-nano
+    AGENT_PROVIDER=openrouter|openai|anthropic
+    LLM_API_KEY=...                        # generic fallback for any provider
+    AGENT_MODEL=deepseek/deepseek-v4-flash-0731   # or gpt-4o-mini / claude-sonnet-4-5
+    OPENAI_API_KEY=...
+    OPENAI_BASE_URL=https://api.openai.com/v1
+    OPENAI_MODEL=gpt-4o-mini
+    ANTHROPIC_API_KEY=...
+    ANTHROPIC_BASE_URL=https://api.anthropic.com
+    ANTHROPIC_MODEL=claude-sonnet-4-5
     AGENT_MAX_STEPS=25
     AGENT_COMMAND_TIMEOUT=600
     AGENT_MAX_OUTPUT=12000
@@ -64,17 +77,46 @@ from typing import Any, Optional
 # CONFIG
 # ============================================================
 
-# Default model used when AGENT_MODEL is not set.
-DEFAULT_MODEL = os.getenv("AGENT_MODEL", "deepseek/deepseek-v4-flash-0731")
+# Provider selection: "openrouter" (default), "openai" or "anthropic".
+PROVIDER = os.getenv("AGENT_PROVIDER", "openrouter").strip().lower()
 
+# Generic API key. If set, it is used as a fallback for whichever provider is
+# active, so you only need one variable. Provider-specific keys take precedence.
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+
+# --- OpenRouter ---------------------------------------------------------
 # OpenRouter API key. Read from the environment; never hardcoded in the source.
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip() or LLM_API_KEY
 
 # Base URL of the OpenRouter API. Overridable for self-hosted/compatible endpoints.
 OPENROUTER_BASE_URL = os.getenv(
     "OPENROUTER_BASE_URL",
     "https://openrouter.ai/api/v1",
 ).rstrip("/")
+
+# --- OpenAI -------------------------------------------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip() or LLM_API_KEY
+OPENAI_BASE_URL = os.getenv(
+    "OPENAI_BASE_URL",
+    "https://api.openai.com/v1",
+).rstrip("/")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# --- Anthropic (Claude) -------------------------------------------------
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip() or LLM_API_KEY
+ANTHROPIC_BASE_URL = os.getenv(
+    "ANTHROPIC_BASE_URL",
+    "https://api.anthropic.com",
+).rstrip("/")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+
+# Default model used when AGENT_MODEL is not set (depends on the provider).
+if PROVIDER == "openai":
+    DEFAULT_MODEL = os.getenv("AGENT_MODEL", OPENAI_MODEL)
+elif PROVIDER == "anthropic":
+    DEFAULT_MODEL = os.getenv("AGENT_MODEL", ANTHROPIC_MODEL)
+else:
+    DEFAULT_MODEL = os.getenv("AGENT_MODEL", "deepseek/deepseek-v4-flash-0731")
 
 # Referer and title sent to OpenRouter for attribution/analytics.
 HTTP_REFERER = os.getenv(
@@ -651,26 +693,77 @@ STYLE:
 
 
 # ============================================================
-# OPENROUTER
+# LLM PROVIDERS (OpenRouter / OpenAI / Anthropic)
 # ============================================================
 
-class OpenRouterError(RuntimeError):
-    """Raised for any OpenRouter API failure."""
+class ProviderError(RuntimeError):
+    """Raised for any LLM provider API failure."""
 
 
-def call_openrouter(
+def _http_post_json(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int = 120,
+) -> tuple[int, str]:
+    """Perform a JSON POST request and return (status_code, body)."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return exc.code, body
+
+
+def _stream_http_json(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: int = 120,
+) -> Any:
+    """Open a streaming JSON POST request and return the response object."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _print_stream_progress(
+    content_parts: list[str],
+    reasoning_parts: list[str],
+) -> None:
+    """Render the accumulated reasoning/content to the terminal."""
+    reasoning = "".join(reasoning_parts)
+    if reasoning:
+        print()
+        print(dim("── reasoning ──"))
+        print(f"{Colors.YELLOW}{reasoning}{Colors.ENDC}", end="", flush=True)
+        print()
+        print(dim("── end of reasoning ──"))
+    if content_parts:
+        print(dim("🤖 processing..."), end="", flush=True)
+        print(dim("."), end="", flush=True)
+        print()
+
+
+def _call_openrouter(
     messages: list[dict[str, str]],
     model: str,
-    max_retries: int = 3,
-    stream: bool = True,
+    max_retries: int,
+    stream: bool,
 ) -> str:
-    """Call the OpenRouter chat completions API and return the content.
-
-    Supports both streaming and non-streaming responses, with automatic retries
-    and a fallback that disables JSON mode if the model rejects response_format.
-    """
+    """Call the OpenRouter chat completions API and return the content."""
     if not OPENROUTER_API_KEY:
-        raise OpenRouterError(
+        raise ProviderError(
             "OPENROUTER_API_KEY is not set. "
             "Example: export OPENROUTER_API_KEY='your-key'"
         )
@@ -697,30 +790,23 @@ def call_openrouter(
         if use_json_mode:
             request_payload["response_format"] = {"type": "json_object"}
 
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(request_payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(req, timeout=120) as response:
-                if not stream:
-                    raw = response.read().decode("utf-8")
-                    data = json.loads(raw)
-                    choices = data.get("choices") or []
-                    if not choices:
-                        raise OpenRouterError("OpenRouter response without choices.")
-                    content = choices[0].get("message", {}).get("content")
-                    if content is None:
-                        raise OpenRouterError("OpenRouter response without content.")
-                    return str(content)
+            if not stream:
+                status, raw = _http_post_json(url, headers, request_payload)
+                if status >= 400:
+                    raise ProviderError(f"HTTP {status}: {limit_text(raw, 2000)}")
+                data = json.loads(raw)
+                choices = data.get("choices") or []
+                if not choices:
+                    raise ProviderError("OpenRouter response without choices.")
+                content = choices[0].get("message", {}).get("content")
+                if content is None:
+                    raise ProviderError("OpenRouter response without content.")
+                return str(content)
 
+            with _stream_http_json(url, headers, request_payload) as response:
                 content_parts: list[str] = []
-                mode: str = "unknown"  # reasoning | content
-                reasoning_shown = False
-                progress_shown = False
+                reasoning_parts: list[str] = []
                 for raw_line in response:
                     if not raw_line:
                         continue
@@ -740,36 +826,15 @@ def call_openrouter(
                     delta = choices[0].get("delta") or {}
                     reasoning = delta.get("reasoning") or delta.get("reasoning_content")
                     piece = delta.get("content")
-
                     if reasoning:
-                        if mode == "unknown":
-                            print()
-                            print(dim("── reasoning ──"))
-                            mode = "reasoning"
-                        if not reasoning_shown:
-                            reasoning_shown = True
-                        print(f"{Colors.YELLOW}{reasoning}{Colors.ENDC}", end="", flush=True)
-
+                        reasoning_parts.append(reasoning)
                     if piece:
                         content_parts.append(piece)
-                        if mode == "unknown":
-                            mode = "content"
-                        if mode == "content" and not progress_shown:
-                            print(dim("🤖 processing..."), end="", flush=True)
-                            progress_shown = True
-                        # Light visual indicator: a dot per chunk.
-                        if mode == "content":
-                            print(dim("."), end="", flush=True)
 
-                if reasoning_shown:
-                    print()
-                    print(dim("── end of reasoning ──"))
-                elif progress_shown:
-                    print()
-
+                _print_stream_progress(content_parts, reasoning_parts)
                 content = "".join(content_parts)
                 if not content:
-                    raise OpenRouterError(
+                    raise ProviderError(
                         "OpenRouter response without content (empty stream)."
                     )
                 return content
@@ -782,14 +847,13 @@ def call_openrouter(
             ):
                 use_json_mode = False
                 continue
-
-            last_error = OpenRouterError(f"HTTP {exc.code}: {limit_text(body, 2000)}")
+            last_error = ProviderError(f"HTTP {exc.code}: {limit_text(body, 2000)}")
 
         except (urllib.error.URLError, TimeoutError) as exc:
-            last_error = OpenRouterError(f"network error: {exc}")
+            last_error = ProviderError(f"network error: {exc}")
 
         except json.JSONDecodeError as exc:
-            last_error = OpenRouterError(f"non-JSON response: {exc}")
+            last_error = ProviderError(f"non-JSON response: {exc}")
 
         except Exception as exc:
             last_error = exc if isinstance(exc, Exception) else Exception(str(exc))
@@ -799,7 +863,246 @@ def call_openrouter(
             print(dim(f"↻ retry {attempt + 1}/{max_retries} in {delay:.1f}s..."))
             time.sleep(delay)
 
-    raise OpenRouterError(str(last_error or "unknown OpenRouter error"))
+    raise ProviderError(str(last_error or "unknown OpenRouter error"))
+
+
+def _call_openai(
+    messages: list[dict[str, str]],
+    model: str,
+    max_retries: int,
+    stream: bool,
+) -> str:
+    """Call the OpenAI chat completions API and return the content."""
+    if not OPENAI_API_KEY:
+        raise ProviderError(
+            "OPENAI_API_KEY is not set. "
+            "Example: export OPENAI_API_KEY='your-key'"
+        )
+
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+    }
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": stream,
+    }
+
+    use_json_mode = True
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, max_retries + 1):
+        request_payload = dict(payload)
+        if use_json_mode:
+            request_payload["response_format"] = {"type": "json_object"}
+
+        try:
+            if not stream:
+                status, raw = _http_post_json(url, headers, request_payload)
+                if status >= 400:
+                    raise ProviderError(f"HTTP {status}: {limit_text(raw, 2000)}")
+                data = json.loads(raw)
+                choices = data.get("choices") or []
+                if not choices:
+                    raise ProviderError("OpenAI response without choices.")
+                content = choices[0].get("message", {}).get("content")
+                if content is None:
+                    raise ProviderError("OpenAI response without content.")
+                return str(content)
+
+            with _stream_http_json(url, headers, request_payload) as response:
+                content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                for raw_line in response:
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str or data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                    piece = delta.get("content")
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                    if piece:
+                        content_parts.append(piece)
+
+                _print_stream_progress(content_parts, reasoning_parts)
+                content = "".join(content_parts)
+                if not content:
+                    raise ProviderError(
+                        "OpenAI response without content (empty stream)."
+                    )
+                return content
+
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if use_json_mode and exc.code in {400, 404, 422} and (
+                "response_format" in body.lower()
+                or "json_object" in body.lower()
+            ):
+                use_json_mode = False
+                continue
+            last_error = ProviderError(f"HTTP {exc.code}: {limit_text(body, 2000)}")
+
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = ProviderError(f"network error: {exc}")
+
+        except json.JSONDecodeError as exc:
+            last_error = ProviderError(f"non-JSON response: {exc}")
+
+        except Exception as exc:
+            last_error = exc if isinstance(exc, Exception) else Exception(str(exc))
+
+        if attempt < max_retries:
+            delay = 1.5 ** (attempt - 1)
+            print(dim(f"↻ retry {attempt + 1}/{max_retries} in {delay:.1f}s..."))
+            time.sleep(delay)
+
+    raise ProviderError(str(last_error or "unknown OpenAI error"))
+
+
+def _call_anthropic(
+    messages: list[dict[str, str]],
+    model: str,
+    max_retries: int,
+    stream: bool,
+) -> str:
+    """Call the Anthropic Messages API and return the content.
+
+    The Anthropic API uses a different schema (system + messages, content blocks)
+    and a different streaming format (event-based SSE), so it is handled here.
+    """
+    if not ANTHROPIC_API_KEY:
+        raise ProviderError(
+            "ANTHROPIC_API_KEY is not set. "
+            "Example: export ANTHROPIC_API_KEY='your-key'"
+        )
+
+    url = f"{ANTHROPIC_BASE_URL}/v1/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+    }
+
+    # Anthropic separates the system prompt from the conversation messages.
+    system_prompt = ""
+    anthropic_messages: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "system":
+            system_prompt = content
+        elif role in {"user", "assistant"}:
+            anthropic_messages.append({"role": role, "content": content})
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 8192,
+        "messages": anthropic_messages,
+        "stream": stream,
+    }
+    if system_prompt:
+        payload["system"] = system_prompt
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            if not stream:
+                status, raw = _http_post_json(url, headers, payload)
+                if status >= 400:
+                    raise ProviderError(f"HTTP {status}: {limit_text(raw, 2000)}")
+                data = json.loads(raw)
+                blocks = data.get("content") or []
+                text = "".join(
+                    b.get("text", "") for b in blocks if b.get("type") == "text"
+                )
+                if not text:
+                    raise ProviderError("Anthropic response without content.")
+                return text
+
+            with _stream_http_json(url, headers, payload) as response:
+                content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                for raw_line in response:
+                    if not raw_line:
+                        continue
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    etype = event.get("type")
+                    if etype == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            content_parts.append(delta.get("text", ""))
+                        elif delta.get("type") == "thinking_delta":
+                            reasoning_parts.append(delta.get("thinking", ""))
+                    elif etype == "message_stop":
+                        break
+
+                _print_stream_progress(content_parts, reasoning_parts)
+                content = "".join(content_parts)
+                if not content:
+                    raise ProviderError(
+                        "Anthropic response without content (empty stream)."
+                    )
+                return content
+
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            last_error = ProviderError(f"HTTP {exc.code}: {limit_text(body, 2000)}")
+
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = ProviderError(f"network error: {exc}")
+
+        except json.JSONDecodeError as exc:
+            last_error = ProviderError(f"non-JSON response: {exc}")
+
+        except Exception as exc:
+            last_error = exc if isinstance(exc, Exception) else Exception(str(exc))
+
+        if attempt < max_retries:
+            delay = 1.5 ** (attempt - 1)
+            print(dim(f"↻ retry {attempt + 1}/{max_retries} in {delay:.1f}s..."))
+            time.sleep(delay)
+
+    raise ProviderError(str(last_error or "unknown Anthropic error"))
+
+
+def call_llm(
+    messages: list[dict[str, str]],
+    model: str,
+    max_retries: int = 3,
+    stream: bool = True,
+) -> str:
+    """Dispatch a chat request to the configured provider."""
+    if PROVIDER == "openai":
+        return _call_openai(messages, model, max_retries, stream)
+    if PROVIDER == "anthropic":
+        return _call_anthropic(messages, model, max_retries, stream)
+    return _call_openrouter(messages, model, max_retries, stream)
 
 
 def parse_agent_response(text: str) -> dict[str, Any]:
@@ -1055,8 +1358,8 @@ def run_task(
         )
 
         try:
-            raw = call_openrouter(messages, model)
-        except OpenRouterError as exc:
+            raw = call_llm(messages, model)
+        except ProviderError as exc:
             error(str(exc))
             # Do not leave a "half-broken" context.
             return messages
@@ -1236,13 +1539,19 @@ HELP_TEXT = """
 def show_status(model: str, autopilot: bool = False) -> None:
     """Print the current session status and configuration."""
     banner("STATUS")
+    print(f"Provider:      {PROVIDER}")
     print(f"Model:         {model}")
     print(f"Directory:     {os.getcwd()}")
     print(f"User:          {getpass.getuser()}")
     print(f"Timeout:       {COMMAND_TIMEOUT}s")
     print(f"Max step:      {MAX_STEPS}")
     print(f"Max output:    {MAX_OUTPUT_CHARS}")
-    print(f"API base URL:  {OPENROUTER_BASE_URL}")
+    if PROVIDER == "openai":
+        print(f"API base URL:  {OPENAI_BASE_URL}")
+    elif PROVIDER == "anthropic":
+        print(f"API base URL:  {ANTHROPIC_BASE_URL}")
+    else:
+        print(f"API base URL:  {OPENROUTER_BASE_URL}")
     print(f"Autopilot:     {'ACTIVE (no confirmation)' if autopilot else 'disabled'}")
 
 
@@ -1302,7 +1611,33 @@ def main() -> int:
         ):
             setattr(Colors, attr, "")
 
-    if not OPENROUTER_API_KEY:
+    if PROVIDER == "openai" and not OPENAI_API_KEY:
+        error("OPENAI_API_KEY is missing.")
+        boxed(
+            "To use this assistant with OpenAI you need an API key.\n"
+            "1. Go to https://platform.openai.com and create an account\n"
+            "2. Generate an API key in the API keys section\n"
+            "3. Set it in the terminal:\n"
+            "   export OPENAI_API_KEY='sk-...'\n"
+            "4. Relaunch this script",
+            Colors.YELLOW,
+        )
+        return 2
+
+    if PROVIDER == "anthropic" and not ANTHROPIC_API_KEY:
+        error("ANTHROPIC_API_KEY is missing.")
+        boxed(
+            "To use this assistant with Claude you need an Anthropic API key.\n"
+            "1. Go to https://console.anthropic.com and create an account\n"
+            "2. Generate an API key in the API keys section\n"
+            "3. Set it in the terminal:\n"
+            "   export ANTHROPIC_API_KEY='sk-ant-...'\n"
+            "4. Relaunch this script",
+            Colors.YELLOW,
+        )
+        return 2
+
+    if PROVIDER == "openrouter" and not OPENROUTER_API_KEY:
         error("OPENROUTER_API_KEY is missing.")
         boxed(
             "To use this assistant you need an OpenRouter key.\n"

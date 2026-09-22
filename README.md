@@ -2,7 +2,7 @@
 
 # 🤖 Linux Autopilot Agent
 
-**An interactive AI agent for Linux system administration, debugging and automation — powered by OpenRouter.**
+**An interactive AI agent for Linux system administration, debugging and automation — powered by OpenRouter, OpenAI or Anthropic (Claude).**
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -40,7 +40,7 @@
 
 ## 🧠 What is it?
 
-**Linux Autopilot Agent** is a terminal-based AI assistant that helps you administer, debug and automate a Linux system (including Raspberry Pi) using natural language. It connects to [OpenRouter](https://openrouter.ai) to access a wide range of LLMs, and executes shell commands on your behalf.
+**Linux Autopilot Agent** is a terminal-based AI assistant that helps you administer, debug and automate a Linux system (including Raspberry Pi) using natural language. It connects to [OpenRouter](https://openrouter.ai), [OpenAI](https://platform.openai.com) or [Anthropic (Claude)](https://www.anthropic.com) to access a wide range of LLMs, and executes shell commands on your behalf.
 
 Unlike naive "AI shell" wrappers, this agent uses a **structured JSON protocol** between the model and the shell — no fragile parsing of ```bash``` code blocks. Every command is classified by a **local, model-independent risk engine** before execution.
 
@@ -68,7 +68,7 @@ Unlike naive "AI shell" wrappers, this agent uses a **structured JSON protocol**
 
 ```mermaid
 flowchart LR
-    A[You: natural language request] --> B[OpenRouter LLM]
+    A[You: natural language request] --> B[LLM provider]
     B --> C[JSON response: message + action]
     C --> D{Local Risk Engine}
     D -->|SAFE| E[Execute automatically]
@@ -81,7 +81,7 @@ flowchart LR
 ```
 
 1. You type a request in natural language.
-2. The agent sends it (with your local system context) to an OpenRouter model.
+2. The agent sends it (with your local system context) to the configured LLM provider (OpenRouter, OpenAI or Anthropic).
 3. The model replies with a **single JSON object** describing a message and an optional shell action.
 4. The **local risk engine** classifies the command.
 5. Safe commands run automatically; risky ones ask for your confirmation.
@@ -94,7 +94,10 @@ flowchart LR
 
 - **Linux** (or Raspberry Pi / any Unix-like system with `/bin/bash`)
 - **Python 3.8+**
-- An **OpenRouter API key** (free to create at [openrouter.ai](https://openrouter.ai))
+- An API key for one of the supported providers:
+  - **OpenRouter** (free to create at [openrouter.ai](https://openrouter.ai))
+  - **OpenAI** ([platform.openai.com](https://platform.openai.com))
+  - **Anthropic / Claude** ([console.anthropic.com](https://console.anthropic.com))
 
 No external Python packages are required.
 
@@ -117,9 +120,11 @@ That's it. No `pip install`, no virtual environment required.
 
 ## ⚡ Quick Start
 
+### Option A — OpenRouter (default)
+
 ```bash
-# 1. Set your OpenRouter API key
-export OPENROUTER_API_KEY='sk-or-v1-...'
+# 1. Set your API key (LLM_API_KEY works for any provider)
+export LLM_API_KEY='sk-or-v1-...'
 
 # 2. Run interactively
 python3 linux_autopilot.py
@@ -127,6 +132,54 @@ python3 linux_autopilot.py
 # Or run a one-shot task
 python3 linux_autopilot.py "check why docker won't start"
 ```
+
+### Option B — OpenAI
+
+```bash
+export AGENT_PROVIDER=openai
+export LLM_API_KEY='sk-...'          # or OPENAI_API_KEY
+export OPENAI_MODEL='gpt-4o-mini'   # optional
+
+python3 linux_autopilot.py
+```
+
+### Option C — Claude (Anthropic)
+
+```bash
+export AGENT_PROVIDER=anthropic
+export LLM_API_KEY='sk-ant-...'      # or ANTHROPIC_API_KEY
+export ANTHROPIC_MODEL='claude-sonnet-4-5'   # optional
+
+python3 linux_autopilot.py
+```
+
+---
+
+## 🎯 Choosing a provider (the key setting)
+
+> **`AGENT_PROVIDER` is the single variable that decides which API the agent talks to.**
+> Everything else (model, key, base URL) depends on it.
+
+| `AGENT_PROVIDER` | API used | Default model | Key used |
+|------------------|----------|---------------|----------|
+| *(not set)* → **`openrouter`** | OpenRouter | `deepseek/deepseek-v4-flash-0731` | `LLM_API_KEY` or `OPENROUTER_API_KEY` |
+| `openai` | OpenAI | `gpt-4o-mini` | `LLM_API_KEY` or `OPENAI_API_KEY` |
+| `anthropic` | Anthropic (Claude) | `claude-sonnet-4-5` | `LLM_API_KEY` or `ANTHROPIC_API_KEY` |
+
+**How it works:**
+
+1. The agent reads `AGENT_PROVIDER` at startup. If it's missing, it defaults to `openrouter`.
+2. Based on that value it picks the **default model** and the **API endpoint**.
+3. It then uses the matching API key (`LLM_API_KEY` as a generic fallback, or the provider-specific one).
+
+```bash
+# Example: switch from OpenRouter to Claude
+# (only AGENT_PROVIDER changes — the key can stay the same)
+export AGENT_PROVIDER=anthropic
+python3 linux_autopilot.py
+```
+
+You can confirm which provider is active at any time with the `:status` command inside the session.
 
 ---
 
@@ -150,7 +203,7 @@ python3 linux_autopilot.py "show me how much space the Docker directories take"
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--model NAME` | OpenRouter model to use | `deepseek/deepseek-v4-flash-0731` |
+| `--model NAME` | Model to use (provider-specific) | provider default |
 | `--max-steps N` | Maximum number of steps per task | `25` |
 | `--timeout N` | Command timeout in seconds | `600` |
 | `--no-color` | Disable terminal colors | off |
@@ -160,8 +213,16 @@ python3 linux_autopilot.py "show me how much space the Docker directories take"
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENROUTER_API_KEY` | Your OpenRouter API key (**required**) | — |
-| `AGENT_MODEL` | Default model | `deepseek/deepseek-v4-flash-0731` |
+| **`AGENT_PROVIDER`** | **⚠️ The discriminator: selects the API provider** — `openrouter`, `openai` or `anthropic` | `openrouter` |
+| `LLM_API_KEY` | Generic API key, used as fallback for any provider | — |
+| `OPENROUTER_API_KEY` | OpenRouter API key (overrides `LLM_API_KEY`) | — |
+| `OPENAI_API_KEY` | OpenAI API key (overrides `LLM_API_KEY`) | — |
+| `OPENAI_BASE_URL` | OpenAI-compatible base URL | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | Default OpenAI model | `gpt-4o-mini` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (overrides `LLM_API_KEY`) | — |
+| `ANTHROPIC_BASE_URL` | Anthropic base URL | `https://api.anthropic.com` |
+| `ANTHROPIC_MODEL` | Default Claude model | `claude-sonnet-4-5` |
+| `AGENT_MODEL` | Override the default model for any provider | provider default |
 | `AGENT_MAX_STEPS` | Max steps per task | `25` |
 | `AGENT_COMMAND_TIMEOUT` | Command timeout (seconds) | `600` |
 | `AGENT_MAX_OUTPUT` | Max output chars sent to the model | `12000` |
